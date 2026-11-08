@@ -1,0 +1,17 @@
+{
+  "name": "rbx-autojoin",
+  "version": "1.0.0",
+  "description": "Termux Discord bot that auto-joins Roblox servers from TeleportToPlaceInstance messages",
+  "main": "bot.js",
+  "scripts": {
+    "start": "node bot.js"
+  },
+  "dependencies": {
+    "discord.js": "^14.16.3",
+    "dotenv": "^16.4.5"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "license": "MIT"
+}
