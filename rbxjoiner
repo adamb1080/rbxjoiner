@@ -128,7 +128,7 @@ setup() {
 
   # how long to stay in each server before hopping to the next one in the waitlist
   local cur_stay stay
-  cur_stay="$(get_val STAY_SECONDS 60)"
+  cur_stay="$(get_val STAY_SECONDS 30)"
   while true; do
     read -rp "seconds to stay in each server before the next one [$cur_stay]: " stay
     stay="$(printf '%s' "${stay:-$cur_stay}" | tr -d '[:space:]')"
@@ -174,7 +174,9 @@ setup() {
   # keep advanced values if they were already set (otherwise use defaults)
   local extras="" kv key
   for kv in PLACE_ID=142823291 LINK_STYLE=experiences DEDUPE_MS=60000 \
-            COLLECT_SECONDS=3 EXPIRE_SECONDS=300 MIN_VALUE=0; do
+            COLLECT_SECONDS=3 EXPIRE_SECONDS=300 MIN_VALUE=0 INSTANT_VALUE=30 \
+            HEARTBEAT=on HEARTBEAT_SECONDS=1 HEARTBEAT_DEAD_STREAK=3 \
+            RECOVER_GRACE_SECONDS=25 ROBLOX_PACKAGE=com.roblox.client; do
     key="${kv%%=*}"
     extras+="$key=$(get_val "$key" "${kv#*=}")"$'\n'
   done
@@ -258,8 +260,9 @@ show_config() {
   echo "bot token : $(mask "$(get_val DISCORD_TOKEN)")"
   echo "scan id(s): $(get_val CHANNEL_IDS '(not set)')"
   echo "logs id   : $(get_val LOG_CHANNEL_ID '(off)')"
-  echo "stay time : $(get_val STAY_SECONDS 60)s per server"
+  echo "stay time : $(get_val STAY_SECONDS 30)s per server"
   echo "min value : $(get_val MIN_VALUE 0)"
+  echo "instant at: $(get_val INSTANT_VALUE 30) (0 = off)"
   echo "place id  : $(get_val PLACE_ID 142823291)"
   echo "link style: $(get_val LINK_STYLE experiences)"
   if [ -n "$(get_val KEY_LINK)$(get_val PLATOBOOST_SERVICE)$(get_val KEY_URL)" ]; then

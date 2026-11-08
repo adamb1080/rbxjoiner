@@ -47,9 +47,10 @@ const LOG_CHANNEL_ID = env('LOG_CHANNEL_ID');
 const LINK_STYLE = env('LINK_STYLE', 'experiences');
 const DEDUPE_MS = envNum('DEDUPE_MS', 60000);
 const COLLECT_MS = envNum('COLLECT_SECONDS', 3) * 1000; // when idle, wait this long for better servers
-const STAY_MS = envNum('STAY_SECONDS', 60) * 1000; // time in each server before hopping to the next
+const STAY_MS = envNum('STAY_SECONDS', 30) * 1000; // time in each server before hopping to the next
 const EXPIRE_MS = envNum('EXPIRE_SECONDS', 300) * 1000; // drop queued servers older than this
 const MIN_VALUE = envNum('MIN_VALUE', 0); // skip servers worth less than this
+const INSTANT_VALUE = envNum('INSTANT_VALUE', 30); // join right away if a server is worth this or more (0 = off)
 
 // Crash recovery: a heartbeat that watches the Roblox process and reopens it
 // into the same server if it dies.
@@ -522,7 +523,15 @@ client.on('messageCreate', async (message) => {
   waitlist.push({ jobId, ...inv, addedAt: Date.now(), message });
   console.log(`[rbx] queued ${shortJob(jobId)} value ${fmtValue(inv.value)} (${waitlist.length} waiting)`);
   message.react('⏳').catch(() => {});
-  schedule();
+
+  // Big server? Jump on it now — skip the collect wait and the current stay timer.
+  if (INSTANT_VALUE > 0 && inv.value != null && inv.value >= INSTANT_VALUE) {
+    console.log(`[rbx] instant join: ${shortJob(jobId)} worth ${fmtValue(inv.value)} (>= ${INSTANT_VALUE})`);
+    busyUntil = 0;
+    schedule(0);
+  } else {
+    schedule();
+  }
 });
 
 client.on('interactionCreate', async (interaction) => {

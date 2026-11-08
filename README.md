@@ -40,7 +40,7 @@ enter bot token id: ************************************************
   got it (...x9Qk, 72 chars)
 channel scan id: 123456789012345678
 logs id (Enter to skip): 234567890123456789
-seconds to stay in each server before the next one [60]: 60
+seconds to stay in each server before the next one [30]: 30
 
 saved. it'll remember this every time you run rbxjoiner.
 ```
@@ -74,9 +74,10 @@ Already installed? Run `rbxjoiner update` instead.
 
 1. A webhook post comes in. The bot pulls out the job ID, fetches the rubis link and reads `Total Value`. The message gets a ⏳ reaction.
 2. **When you're not in a server**, the bot waits 3 seconds in case a better server lands right after, then joins the highest value. The message changes to ✅.
-3. **While you're in a server**, new posts just queue up. When your stay time runs out, it hops to the highest-value server waiting.
-4. Servers that sit in the queue for 5 minutes are dropped (⌛), because by then the server has probably changed.
-5. Ties go to whichever server was posted first. A post with no rubis link (or one the bot can't read) still queues, but it goes to the bottom.
+3. **While you're in a server**, new posts just queue up. When your stay time runs out (default 30s), it hops to the highest-value server waiting.
+4. **A server worth `INSTANT_VALUE` or more (default 30)** jumps the line — it skips the 3s collect wait and the current stay timer and joins right away. Set `INSTANT_VALUE=0` to turn this off.
+5. Servers that sit in the queue for 5 minutes are dropped (⌛), because by then the server has probably changed.
+6. Ties go to whichever server was posted first. A post with no rubis link (or one the bot can't read) still queues, but it goes to the bottom.
 
 The bot can't tell when you leave a Roblox server, so it moves on based on the stay time. Use `/next` to move on early.
 
@@ -154,8 +155,9 @@ Everything is saved in `.env` in the repo folder. Git ignores this file, so your
 
 | key | default | what it does |
 |-----|---------|--------------|
-| `STAY_SECONDS` | `60` | time in each server before hopping to the next (setup asks for this one) |
+| `STAY_SECONDS` | `30` | time in each server before hopping to the next (setup asks for this one) |
 | `MIN_VALUE` | `0` | skip servers worth less than this (they get ⏭️) |
+| `INSTANT_VALUE` | `30` | join right away when a server is worth this or more (`0` = off) |
 | `COLLECT_SECONDS` | `3` | when you're not in a server, how long to wait for a better server before joining |
 | `EXPIRE_SECONDS` | `300` | drop queued servers older than this |
 | `PLACE_ID` | `142823291` | place it always joins |
