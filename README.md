@@ -40,8 +40,8 @@ The Roblox app handles the deep link and joins that exact server. The bot reacts
 
 ```bash
 pkg install -y git
-git clone https://github.com/<you>/rbx-autojoin.git
-cd rbx-autojoin
+git clone https://github.com/adamb1080/rbxjoiner.git
+cd rbxjoiner
 bash install.sh
 ```
 
@@ -53,7 +53,7 @@ The script asks for your bot token (input is hidden) and which channel IDs to wa
 rbxjoin
 ```
 
-That's the alias `install.sh` adds. If it doesn't work yet, restart Termux or run `source ~/.bashrc`. Without the alias you can run `bash ~/rbx-autojoin/start.sh`.
+That's the alias `install.sh` adds. If it doesn't work yet, restart Termux or run `source ~/.bashrc`. Without the alias you can run `bash ~/rbxjoiner/start.sh`.
 
 `start.sh` takes a wake lock so the phone doesn't sleep the bot, and restarts the bot if it crashes. Press Ctrl+C to stop it.
 
