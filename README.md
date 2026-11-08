@@ -16,7 +16,7 @@ Stack: Node.js 18+, discord.js v14, Termux.
 | command | what it does |
 |---------|--------------|
 | `rbxjoiner` | starts the bot. The first time, it runs setup before starting |
-| `rbxjoiner setup` | asks for bot token, scan channel, logs channel and stay time, then saves them |
+| `rbxjoiner setup` | asks for bot token, scan channel, logs channel, stay time and the Delta key helper, then saves them |
 | `rbxjoiner config` | shows what's saved (the token is masked) |
 | `rbxjoiner update` | pulls the latest version from GitHub |
 
@@ -102,33 +102,43 @@ This needs to see other apps' processes, which it does with `pidof` (falling bac
 
 Delta's key system runs on Platoboost, and the keys expire (usually every 24h). This keeps a fresh one around so you're not re-keying blind: it caches the key, writes it to a file Delta reads, posts to your logs channel, and warns you **before** it dies so re-keying is one tap.
 
-The one thing no script can do for you is complete the ad-link checkpoint — that's the part the provider sells. So everything *around* it is automatic: the bot pulls the current link, pings you when a new one drops, and you just complete it and paste the key back. Three ways to feed it:
+The one thing no script can do for you is complete the ad-link checkpoint — that's the part the provider sells. So everything *around* it is automatic: the bot sends you your key link when it's time, you complete it, and paste the key back. **You don't edit any files for this — `rbxjoiner setup` asks you the questions.**
 
-- **Platoboost (recommended for the auto-link flow)** — set `PLATOBOOST_SERVICE` and `PLATOBOOST_IDENTIFIER` (your Delta HWID) plus `KEY_MENTION` (your Discord user id). The bot pulls the current checkpoint link on its own, and **when a new link comes out it @s you** in the logs channel. You complete it and run **`/key <key>`** — it writes the key to `KEY_FILE` for Delta and starts the countdown, all **without restarting** anything. If Platoboost already has an active key, it just grabs it hands-free.
-- **`KEY_LINK`** — a *static* checkpoint link, for when you have no Platoboost ids (or as a fallback if the live pull fails). Same `/getkey` + `/key <key>` flow; it just can't rotate the link for you.
-- **`KEY_URL`** — a link that returns a key (a getkey endpoint, or your own bypass). Raw text or JSON both work. Set this and the whole thing runs fully hands-free, no pasting at all.
+### Easiest setup (just the commands)
 
-### The auto-link flow, step by step
+Run `rbxjoiner setup` and say yes to the Delta key helper. It asks three things:
 
-1. In `.env` set `PLATOBOOST_SERVICE` + `PLATOBOOST_IDENTIFIER`, `KEY_MENTION` (your user id), and `KEY_FILE` (the file Delta reads). Start the bot — once, and leave it running.
-2. When there's no key — or about `KEY_WARN_SECONDS` before the current one dies — the bot pulls the current checkpoint and **@s you** with the link. It only pings again when the link actually changes, so no spam. You can also pull it any time with `/getkey`.
-3. Open the link, complete the checkpoint, copy the key.
-4. Run **`/key <key>`**. The bot writes it to `KEY_FILE` and starts a `KEY_TTL_SECONDS` countdown (24h by default). It applies live in the running process — **no restart of the bot or the script**. Open Delta and it reads the fresh key from that file.
-5. When it runs out, you're back at step 2 — the next link @s you on its own.
+1. **Your Delta key link** — the page you normally open to get a key. Paste it.
+2. **Your Discord user id** (optional) — so it can **@ you** when it's time. Turn on Developer Mode (Discord Settings → Advanced), then tap your name → **Copy User ID**. Press Enter to skip.
+3. **The file Delta reads the key from** — it already defaults to Delta's own license file (`/storage/emulated/0/Delta/Internals/Cache/license`), so just press Enter.
 
-To get your Discord user id for `KEY_MENTION`: Settings → Advanced → Developer Mode on, then right-click yourself → **Copy User ID**. A role is `&ROLEID`; `everyone`/`here` also work.
+That's it. Then in Discord:
 
-The key system stays **off** until Platoboost, `KEY_LINK`, or `KEY_URL` is set. Everything lives in `.env`:
+- When your key's missing or about an hour from dying, the bot posts your link and **@s you**. You can also run **`/getkey`** any time to get it.
+- Open the link, complete it, copy the key.
+- Run **`/key <key>`**. It writes the key to the Delta license file and starts a 24h countdown — **no restarting the bot or anything**. Open Delta and it reads the fresh key.
+- When it runs out, it pings you again. That's the whole loop.
+
+> Termux needs permission to write to that Delta folder. If it can't, run `termux-setup-storage` once and allow it, then set the key again with `/key`.
+
+### Advanced sources (optional, for power users)
+
+If you'd rather not paste keys at all, edit `.env` by hand and set one of these instead of `KEY_LINK`:
+
+- **`KEY_URL`** — an endpoint that returns a key (a getkey API or your own bypass). Raw text or JSON both work. Fully hands-free, no pasting.
+- **Platoboost** — `PLATOBOOST_SERVICE` + `PLATOBOOST_IDENTIFIER` (your Delta HWID). The bot pulls the live (rotating) checkpoint itself, and grabs the key outright if one's already active. `setup` leaves these alone, so they're safe to hand-edit.
+
+The key system stays **off** until `KEY_LINK`, `KEY_URL`, or Platoboost is set. Everything lives in `.env`:
 
 | key | default | what it does |
 |-----|---------|--------------|
+| `KEY_LINK` | *(blank)* | your Delta key link — turns on the `/getkey` + `/key <key>` helper (setup asks for this) |
+| `KEY_MENTION` | *(blank)* | who to @ when it's time to re-key — your user id, `&roleid`, or `everyone`/`here` |
+| `KEY_FILE` | *(blank)* | file Delta reads the key from (setup defaults it to Delta's license file). `~` expands to home |
+| `KEY_URL` | *(blank)* | endpoint that returns a key — the fully hands-free path (no pasting) |
 | `PLATOBOOST_SERVICE` | *(blank)* | your Delta Platoboost service id — turns on the live rotating link |
 | `PLATOBOOST_IDENTIFIER` | *(blank)* | your Delta HWID / identifier |
-| `KEY_MENTION` | *(blank)* | who to @ when a new link drops — your user id, `&roleid`, or `everyone`/`here` |
-| `KEY_LINK` | *(blank)* | a static checkpoint link (no-Platoboost fallback) — `/getkey` + `/key <key>` |
-| `KEY_URL` | *(blank)* | endpoint that returns a key — the fully hands-free path |
 | `PLATOBOOST_API` | `https://api.platoboost.com` | Platoboost API base (change if your provider moved it) |
-| `KEY_FILE` | *(blank)* | file Delta reads the key from (blank = don't write one). `~` expands to home |
 | `KEY_REFRESH_SECONDS` | `1800` | how often to re-check the key |
 | `KEY_TTL_SECONDS` | `86400` | assumed key lifetime when the source doesn't give an expiry |
 | `KEY_WARN_SECONDS` | `3600` | warn you this long before the key expires |

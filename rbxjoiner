@@ -123,6 +123,41 @@ setup() {
     echo "  numbers only"
   done
 
+  # ---- Delta key helper (optional) ----
+  # When on: the bot posts your key link when it's time (and @s you), you complete it
+  # and run /key <key>, and it writes the key to the file Delta reads — no restart.
+  local DEFAULT_KEY_FILE="/storage/emulated/0/Delta/Internals/Cache/license"
+  local cur_keylink cur_keymention cur_keyfile keylink keymention keyfile wantkey ans
+  cur_keylink="$(get_val KEY_LINK)"
+  cur_keymention="$(get_val KEY_MENTION)"
+  cur_keyfile="$(get_val KEY_FILE)"
+  keylink="$cur_keylink"; keymention="$cur_keymention"; keyfile="$cur_keyfile"
+
+  echo
+  if [ -n "$cur_keylink$cur_keyfile" ]; then
+    read -rp "set up the Delta key helper (/getkey, /key)? [Y/n]: " wantkey
+    [[ "$wantkey" =~ ^[Nn] ]] && wantkey="" || wantkey="y"
+  else
+    read -rp "set up the Delta key helper (/getkey, /key)? [y/N]: " wantkey
+    [[ "$wantkey" =~ ^[Yy] ]] && wantkey="y" || wantkey=""
+  fi
+
+  if [ -n "$wantkey" ]; then
+    # the link you open to get a Delta key (your getkey page)
+    read -rp "paste your Delta key link${cur_keylink:+ [saved]}: " ans
+    keylink="${ans:-$cur_keylink}"
+
+    # discord user id so it can @ you when it's time — optional
+    echo "  (user id = Discord Settings > Advanced > Developer Mode on,"
+    echo "   then tap your name > Copy User ID. press Enter to skip.)"
+    read -rp "your Discord user id${cur_keymention:+ [$cur_keymention]}: " ans
+    keymention="$(printf '%s' "${ans:-$cur_keymention}" | tr -d '[:space:]')"
+
+    # file Delta reads the key from — default is Delta's own license file
+    read -rp "file Delta reads the key from [${cur_keyfile:-$DEFAULT_KEY_FILE}]: " ans
+    keyfile="${ans:-${cur_keyfile:-$DEFAULT_KEY_FILE}}"
+  fi
+
   # keep advanced values if they were already set (otherwise use defaults)
   local extras="" kv key
   for kv in PLACE_ID=142823291 LINK_STYLE=experiences DEDUPE_MS=60000 \
@@ -131,15 +166,29 @@ setup() {
     extras+="$key=$(get_val "$key" "${kv#*=}")"$'\n'
   done
 
+  # preserve any advanced key settings set by hand, so setup never wipes them
+  local adv="" ak av
+  for ak in PLATOBOOST_SERVICE PLATOBOOST_IDENTIFIER PLATOBOOST_API KEY_URL \
+            KEY_REFRESH_SECONDS KEY_TTL_SECONDS KEY_WARN_SECONDS \
+            KEY_JSON_PATH KEY_EXPIRY_JSON_PATH KEY_REGEX; do
+    av="$(get_val "$ak")"
+    [ -n "$av" ] && adv+="$ak=$av"$'\n'
+  done
+
   {
     printf 'DISCORD_TOKEN=%s\nCHANNEL_IDS=%s\nLOG_CHANNEL_ID=%s\nSTAY_SECONDS=%s\n' \
       "$token" "$scan" "$logs" "$stay"
     printf '%s' "$extras"
+    [ -n "$keylink" ]    && printf 'KEY_LINK=%s\n' "$keylink"
+    [ -n "$keymention" ] && printf 'KEY_MENTION=%s\n' "$keymention"
+    [ -n "$keyfile" ]    && printf 'KEY_FILE=%s\n' "$keyfile"
+    printf '%s' "$adv"
   } > "$ENV_FILE"
   chmod 600 "$ENV_FILE"
 
   echo
   echo "saved. it'll remember this every time you run rbxjoiner."
+  [ -n "$keylink" ] && echo "key helper on — in Discord use /getkey to get your link, then /key <key> to set it."
   echo
 }
 
@@ -155,6 +204,13 @@ show_config() {
   echo "min value : $(get_val MIN_VALUE 0)"
   echo "place id  : $(get_val PLACE_ID 142823291)"
   echo "link style: $(get_val LINK_STYLE experiences)"
+  if [ -n "$(get_val KEY_LINK)$(get_val PLATOBOOST_SERVICE)$(get_val KEY_URL)" ]; then
+    echo "key helper: on"
+    echo "  key file: $(get_val KEY_FILE '(not set)')"
+    echo "  @ you   : $(get_val KEY_MENTION '(off)')"
+  else
+    echo "key helper: off"
+  fi
 }
 
 run_bot() {
