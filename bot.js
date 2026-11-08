@@ -51,6 +51,14 @@ const STAY_MS = envNum('STAY_SECONDS', 60) * 1000; // time in each server before
 const EXPIRE_MS = envNum('EXPIRE_SECONDS', 300) * 1000; // drop queued servers older than this
 const MIN_VALUE = envNum('MIN_VALUE', 0); // skip servers worth less than this
 
+// Crash recovery: a heartbeat that watches the Roblox process and reopens it
+// into the same server if it dies.
+const HEARTBEAT_ON = /^(1|on|true|yes)$/i.test(env('HEARTBEAT', 'on'));
+const HEARTBEAT_MS = Math.max(envNum('HEARTBEAT_SECONDS', 1), 1) * 1000; // how often we check
+const DEAD_STREAK = Math.max(envNum('HEARTBEAT_DEAD_STREAK', 3), 1); // dead checks in a row before we act (debounce)
+const RECOVER_GRACE_MS = Math.max(envNum('RECOVER_GRACE_SECONDS', 25), 1) * 1000; // after a launch, Roblox is still opening — don't call it dead yet
+const ROBLOX_PACKAGE = env('ROBLOX_PACKAGE', 'com.roblox.client'); // change for Roblox VNG etc.
+
 // The rbxjoiner launcher stops (instead of restarting) on this exit code.
 const EXIT_BAD_CONFIG = 78;
 
@@ -195,6 +203,100 @@ function launchRoblox(jobId) {
   });
 }
 
+// ---------- crash recovery ----------
+//
+// A 1s heartbeat watches the Roblox process. While we think we're in a server,
+// if Roblox dies (crash, OOM kill, user-exit) we reopen the same job id. Detection
+// in ~DEAD_STREAK seconds + a cold start lands you back in within ~30s.
+
+let hbTimer = null;
+let hbGraceUntil = 0; // skip checks until this time — Roblox is still opening
+let hbDeadStreak = 0; // consecutive "dead" reads
+let hbBlindWarned = false; // warned once that we can't read the process on this device
+let recoveries = 0;
+
+// After every launch, Roblox needs time to open before the heartbeat trusts a "dead".
+function armHeartbeat() {
+  hbGraceUntil = Date.now() + RECOVER_GRACE_MS;
+  hbDeadStreak = 0;
+}
+
+// true = running, false = not running, null = couldn't tell (no process visibility).
+// pidof matches the full package; the ps fallback compares the (possibly truncated) comm.
+function robloxAlive() {
+  return new Promise((resolve) => {
+    execFile('pidof', [ROBLOX_PACKAGE], { timeout: 4000 }, (err, stdout) => {
+      if (!err && stdout.trim()) return resolve(true);
+      if (err && err.code === 1) return resolve(false); // pidof ran, found nothing
+      // pidof missing or errored — fall back to ps (comm is truncated to 15 chars)
+      const needle = ROBLOX_PACKAGE.slice(0, 15);
+      execFile('ps', ['-A', '-o', 'NAME'], { timeout: 4000 }, (e2, out2) => {
+        if (e2 || !out2) return resolve(null); // can't see other processes on this device
+        resolve(out2.includes(needle));
+      });
+    });
+  });
+}
+
+async function recoverRoblox() {
+  if (!current) return;
+  recoveries += 1;
+  console.log(`[rbx] roblox looks dead — reopening ${shortJob(current.jobId)} (recovery #${recoveries})`);
+  armHeartbeat(); // give the relaunch room before we check again
+  const ok = await launchRoblox(current.jobId);
+  current.ok = ok; // a failed relaunch stops the hammering until the next real join
+  await logToDiscord(
+    ok
+      ? `♻️ **Roblox crashed — reopened** \`${shortJob(current.jobId)}\`\nback in within ~30s · recovery #${recoveries}`
+      : `❌ **crash recovery couldn't relaunch** \`${shortJob(current.jobId)}\`\nis "Display over other apps" still on for Termux?`,
+    ok ? COLORS.info : COLORS.fail
+  );
+}
+
+async function heartbeat() {
+  if (!current || !current.ok) return; // not in a server we're holding
+  if (Date.now() < hbGraceUntil) return; // still opening/loading
+
+  const alive = await robloxAlive();
+  if (alive === true) {
+    hbDeadStreak = 0;
+    return;
+  }
+  if (alive === null) {
+    if (!hbBlindWarned) {
+      hbBlindWarned = true;
+      console.warn(`[rbx] heartbeat can't see processes on this device — crash recovery is idle`);
+      await logToDiscord(
+        '⚠️ crash recovery can\'t read Roblox\'s process on this phone, so it\'s idle.\n' +
+          'it needs `pidof`/`ps` to see other apps (rooted or a permissive ROM). set `HEARTBEAT=off` to silence this.',
+        COLORS.fail
+      );
+    }
+    return;
+  }
+
+  hbDeadStreak += 1;
+  if (hbDeadStreak >= DEAD_STREAK) await recoverRoblox();
+}
+
+// Self-rescheduling so a slow ps check can't pile up ticks.
+function startHeartbeat() {
+  if (!HEARTBEAT_ON) {
+    console.log('[rbx] crash recovery off (HEARTBEAT=off)');
+    return;
+  }
+  const tick = async () => {
+    try {
+      await heartbeat();
+    } catch (err) {
+      console.error(`[rbx] heartbeat error: ${err.message}`);
+    }
+    hbTimer = setTimeout(tick, HEARTBEAT_MS);
+  };
+  hbTimer = setTimeout(tick, HEARTBEAT_MS);
+  console.log(`[rbx] crash recovery on — ${HEARTBEAT_MS / 1000}s heartbeat on ${ROBLOX_PACKAGE}`);
+}
+
 // ---------- waitlist ----------
 //
 // Servers queue up and the highest Total Value goes first (ties: oldest first).
@@ -242,6 +344,7 @@ async function joinNext() {
 
   current = { ...next, joinedAt: Date.now(), ok };
   busyUntil = ok ? Date.now() + STAY_MS : 0;
+  armHeartbeat(); // fresh grace window so the heartbeat waits for Roblox to open
   swapReaction(next.message, '⏳', ok ? '✅' : '❌');
 
   const src = `from <#${next.message.channelId}> · [jump](${next.message.url})`;
@@ -375,10 +478,12 @@ client.once('ready', async () => {
   const keyLine = keys.statusLine();
   await logToDiscord(
     `🟢 **rbxjoiner online**\nscanning ${watching}\nplace \`${PLACE_ID}\` · ${STAY_MS / 1000}s per server\nuse \`/waitlist\` to see the queue` +
-      (keyLine ? `\n${keyLine}` : '')
+      (keyLine ? `\n${keyLine}` : '') +
+      (HEARTBEAT_ON ? `\n♻️ crash recovery on · ${HEARTBEAT_MS / 1000}s heartbeat` : '')
   );
 
   keys.start();
+  startHeartbeat();
 });
 
 client.on('guildCreate', registerCommands);

@@ -81,6 +81,22 @@ The bot can't tell when you leave a Roblox server, so it moves on based on the s
 
 Every join gets posted to the logs channel with its value, top item and a jump link.
 
+## Crash recovery
+
+While you're holding a server, a **1-second heartbeat** watches the Roblox process. If it dies — a crash, an out-of-memory kill, or you backing out by mistake — the bot reopens the **same job id** instead of losing your spot. Detection takes about `HEARTBEAT_DEAD_STREAK` seconds, then a cold start, so you're back in within ~30s. Each recovery gets a ♻️ post in the logs channel.
+
+It keeps you in the current server even after the stay time runs out (when nothing better is waiting), so a crash during a quiet stretch still gets you back in.
+
+This needs to see other apps' processes, which it does with `pidof` (falling back to `ps`). That works on most phones used for this; on a locked-down ROM that hides processes it can't tell whether Roblox is alive, posts one ⚠️ warning and sits idle — a rooted phone makes it bulletproof. Turn it off with `HEARTBEAT=off`.
+
+| key | default | what it does |
+|-----|---------|--------------|
+| `HEARTBEAT` | `on` | `off` disables crash recovery |
+| `HEARTBEAT_SECONDS` | `1` | how often it checks the process |
+| `HEARTBEAT_DEAD_STREAK` | `3` | dead checks in a row before it reopens (debounce) |
+| `RECOVER_GRACE_SECONDS` | `25` | after a launch, how long Roblox gets to open before a "dead" counts |
+| `ROBLOX_PACKAGE` | `com.roblox.client` | process name to watch (change for Roblox VNG etc.) |
+
 ## Auto Delta key refresh
 
 Delta's key system runs on Platoboost, and the keys expire (usually every 24h). This keeps a fresh one around so you're not re-keying by hand: on a timer it pulls the current key, caches it, writes it to a file Delta reads, posts it to your logs channel, and warns you **before** it dies so re-keying is one tap.
