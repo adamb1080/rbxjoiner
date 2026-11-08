@@ -27,6 +27,8 @@ Stack: Node.js 18+, discord.js v14, Termux.
 | `/waitlist` | everyone | shows the server you're in, when the next hop happens, and the queue sorted by value (👉 = joining next) |
 | `/next` | Manage Server | skips the timer and joins the top server now |
 | `/clear` | Manage Server | empties the waitlist |
+| `/key` | Manage Server | shows the current Delta key and when it expires (only if the key system is on) |
+| `/refreshkey` | Manage Server | pulls a fresh Delta key right now |
 
 ## Setup
 
@@ -78,6 +80,33 @@ Already installed? Run `rbxjoiner update` instead.
 The bot can't tell when you leave a Roblox server, so it moves on based on the stay time. Use `/next` to move on early.
 
 Every join gets posted to the logs channel with its value, top item and a jump link.
+
+## Auto Delta key refresh
+
+Delta's key system runs on Platoboost, and the keys expire (usually every 24h). This keeps a fresh one around so you're not re-keying by hand: on a timer it pulls the current key, caches it, writes it to a file Delta reads, posts it to your logs channel, and warns you **before** it dies so re-keying is one tap.
+
+The one thing no script can do for you is complete the ad-link checkpoint — that's the part the provider sells. So you feed it a key one of two ways:
+
+- **`KEY_URL`** — a link that returns a key (a getkey endpoint, or your own bypass). Raw text or JSON both work. Set this and the whole thing runs fully hands-free.
+- **Platoboost built-in** — set `PLATOBOOST_SERVICE` and `PLATOBOOST_IDENTIFIER` (your Delta HWID). It asks Platoboost whether your identifier already has an active key and grabs it. When there's no active key, it posts the checkpoint link instead of pretending it got one.
+
+The key system stays **off** until one of those is set. Everything lives in `.env`:
+
+| key | default | what it does |
+|-----|---------|--------------|
+| `KEY_URL` | *(blank)* | endpoint that returns a key — the hands-free path |
+| `PLATOBOOST_SERVICE` | *(blank)* | your Delta Platoboost service id |
+| `PLATOBOOST_IDENTIFIER` | *(blank)* | your Delta HWID / identifier |
+| `PLATOBOOST_API` | `https://api.platoboost.com` | Platoboost API base (change if your provider moved it) |
+| `KEY_FILE` | *(blank)* | file Delta reads the key from (blank = don't write one). `~` expands to home |
+| `KEY_REFRESH_SECONDS` | `1800` | how often to re-check the key |
+| `KEY_TTL_SECONDS` | `86400` | assumed key lifetime when the source doesn't give an expiry |
+| `KEY_WARN_SECONDS` | `3600` | warn you this long before the key expires |
+| `KEY_JSON_PATH` | *(blank)* | if `KEY_URL` returns JSON, where the key is, e.g. `data.key` |
+| `KEY_EXPIRY_JSON_PATH` | *(blank)* | optional unix-seconds expiry field in that JSON |
+| `KEY_REGEX` | *(blank)* | custom scraper for a raw `KEY_URL` response (first group or whole match) |
+
+The cached key and its expiry live in `.keystate.json` (git-ignored) so it survives restarts. Platoboost shuffles their API around sometimes — if the built-in call stops matching your provider, point `KEY_URL` at the real endpoint and you're back in business.
 
 ## Advanced config
 

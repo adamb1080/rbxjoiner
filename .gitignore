@@ -1,3 +1,4 @@
 node_modules/
 .env
+.keystate.json
 npm-debug.log*

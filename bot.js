@@ -20,6 +20,7 @@ const {
   MessageFlags,
 } = require('discord.js');
 const { execFile } = require('child_process');
+const { KeyManager } = require('./keysystem');
 
 // ---------- config ----------
 
@@ -91,6 +92,9 @@ async function swapReaction(message, from, to) {
 const ts = (ms) => `<t:${Math.floor(ms / 1000)}:R>`; // Discord relative timestamp ("in 40 seconds")
 const fmtValue = (v) => (v == null ? '?' : v.toLocaleString('en-US', { maximumFractionDigits: 2 }));
 const shortJob = (id) => id.slice(0, 8);
+
+// Auto Delta key refresh. Off until KEY_URL or PLATOBOOST_SERVICE/IDENTIFIER are set.
+const keys = new KeyManager({ env, envNum, post: logToDiscord, colors: COLORS });
 
 // ---------- parsing ----------
 
@@ -314,7 +318,9 @@ const COMMANDS = [
     .setName('clear')
     .setDescription('Empty the waitlist')
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
-].map((c) => c.toJSON());
+]
+  .map((c) => c.toJSON())
+  .concat(keys.configured ? KeyManager.commands() : []);
 
 // Guild commands show up instantly (global ones can take an hour).
 async function registerCommands(guild) {
@@ -366,9 +372,13 @@ client.once('ready', async () => {
   for (const guild of client.guilds.cache.values()) await registerCommands(guild);
 
   const watching = CHANNEL_IDS.length ? CHANNEL_IDS.map((id) => `<#${id}>`).join(', ') : 'all channels';
+  const keyLine = keys.statusLine();
   await logToDiscord(
-    `🟢 **rbxjoiner online**\nscanning ${watching}\nplace \`${PLACE_ID}\` · ${STAY_MS / 1000}s per server\nuse \`/waitlist\` to see the queue`
+    `🟢 **rbxjoiner online**\nscanning ${watching}\nplace \`${PLACE_ID}\` · ${STAY_MS / 1000}s per server\nuse \`/waitlist\` to see the queue` +
+      (keyLine ? `\n${keyLine}` : '')
   );
+
+  keys.start();
 });
 
 client.on('guildCreate', registerCommands);
@@ -408,6 +418,8 @@ client.on('interactionCreate', async (interaction) => {
   if (!interaction.isChatInputCommand()) return;
 
   try {
+    if (await keys.handleInteraction(interaction)) return;
+
     if (interaction.commandName === 'waitlist') {
       await interaction.reply({ embeds: [waitlistEmbed()] });
     } else if (interaction.commandName === 'next') {
