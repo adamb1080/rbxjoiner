@@ -1,0 +1,146 @@
+#!/data/data/com.termux/files/usr/bin/bash
+# rbxjoiner — Roblox auto-joiner bot for Termux.
+#
+#   rbxjoiner          start the bot (runs setup first if nothing is saved yet)
+#   rbxjoiner setup    enter / change bot token, scan channel(s), logs channel
+#   rbxjoiner config   show what's saved
+#   rbxjoiner update   pull the latest version from GitHub
+
+DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
+ENV_FILE="$DIR/.env"
+cd "$DIR" || exit 1
+
+# exit code bot.js uses for "bad/missing token" so we stop instead of restart-looping
+EXIT_BAD_CONFIG=78
+
+get_val() { # get_val KEY [default]
+  local v=""
+  [ -f "$ENV_FILE" ] && v="$(grep -m1 "^$1=" "$ENV_FILE" | cut -d= -f2-)"
+  echo "${v:-$2}"
+}
+
+is_id() { [[ "$1" =~ ^[0-9]{15,22}$ ]]; }
+
+mask() { [ -n "$1" ] && echo "...${1: -4}" || echo "(not set)"; }
+
+setup() {
+  local cur_token cur_scan cur_logs token scan logs ok id ids
+  cur_token="$(get_val DISCORD_TOKEN)"
+  cur_scan="$(get_val CHANNEL_IDS)"
+  cur_logs="$(get_val LOG_CHANNEL_ID)"
+
+  echo
+  echo "===== rbxjoiner setup ====="
+  [ -n "$cur_token" ] && echo "(press Enter to keep what's in [brackets])"
+  echo
+
+  # bot token (hidden while typing/pasting)
+  while true; do
+    if [ -n "$cur_token" ]; then
+      read -rsp "enter bot token id [$(mask "$cur_token")]: " token; echo
+      token="${token:-$cur_token}"
+    else
+      read -rsp "enter bot token id: " token; echo
+    fi
+    token="$(printf '%s' "$token" | tr -d '[:space:]')"
+    if [ ${#token} -ge 50 ]; then
+      echo "  got it ($(mask "$token"))"
+      break
+    fi
+    echo "  that doesn't look like a bot token, try again"
+  done
+
+  # channel(s) to scan
+  while true; do
+    read -rp "channel scan id${cur_scan:+ [$cur_scan]}: " scan
+    scan="$(printf '%s' "${scan:-$cur_scan}" | tr -d '[:space:]')"
+    ok=1
+    IFS=',' read -ra ids <<< "$scan"
+    [ ${#ids[@]} -eq 0 ] && ok=0
+    for id in "${ids[@]}"; do is_id "$id" || ok=0; done
+    [ $ok -eq 1 ] && break
+    echo "  needs a channel id (numbers only). more than one? separate with commas"
+  done
+
+  # logs channel (optional)
+  while true; do
+    read -rp "logs id${cur_logs:+ [$cur_logs]} (Enter to skip): " logs
+    logs="$(printf '%s' "${logs:-$cur_logs}" | tr -d '[:space:]')"
+    { [ -z "$logs" ] || is_id "$logs"; } && break
+    echo "  needs a channel id (numbers only), or leave it blank"
+  done
+
+  # keep advanced values if they were already set
+  local place style dedupe
+  place="$(get_val PLACE_ID 142823291)"
+  style="$(get_val LINK_STYLE experiences)"
+  dedupe="$(get_val DEDUPE_MS 60000)"
+
+  cat > "$ENV_FILE" <<EOF
+DISCORD_TOKEN=$token
+CHANNEL_IDS=$scan
+LOG_CHANNEL_ID=$logs
+PLACE_ID=$place
+LINK_STYLE=$style
+DEDUPE_MS=$dedupe
+EOF
+  chmod 600 "$ENV_FILE"
+
+  echo
+  echo "saved. it'll remember this every time you run rbxjoiner."
+  echo
+}
+
+show_config() {
+  if [ ! -f "$ENV_FILE" ]; then
+    echo "nothing saved yet, run: rbxjoiner setup"
+    return
+  fi
+  echo "bot token : $(mask "$(get_val DISCORD_TOKEN)")"
+  echo "scan id(s): $(get_val CHANNEL_IDS '(not set)')"
+  echo "logs id   : $(get_val LOG_CHANNEL_ID '(off)')"
+  echo "place id  : $(get_val PLACE_ID 142823291)"
+  echo "link style: $(get_val LINK_STYLE experiences)"
+}
+
+run_bot() {
+  if [ -z "$(get_val DISCORD_TOKEN)" ] || [ -z "$(get_val CHANNEL_IDS)" ]; then
+    echo "[rbx] first time? let's set you up."
+    setup
+  fi
+
+  [ -d node_modules ] || npm install --omit=dev || exit 1
+
+  # stop Android from sleeping Termux while the screen is off
+  command -v termux-wake-lock >/dev/null 2>&1 && termux-wake-lock
+  trap 'command -v termux-wake-unlock >/dev/null 2>&1 && termux-wake-unlock; echo; echo "[rbx] stopped."; exit 0' INT TERM
+
+  while true; do
+    node bot.js
+    code=$?
+    if [ $code -eq $EXIT_BAD_CONFIG ]; then
+      echo "[rbx] fix your settings with: rbxjoiner setup"
+      command -v termux-wake-unlock >/dev/null 2>&1 && termux-wake-unlock
+      exit 1
+    fi
+    echo "[rbx] bot stopped (exit $code), restarting in 5s... (ctrl+c to quit)"
+    sleep 5
+  done
+}
+
+update() {
+  git pull --ff-only && npm install --omit=dev && echo "[rbx] up to date."
+}
+
+usage() {
+  sed -n '4,8p' "$0" | sed 's/^# \{0,1\}//'
+}
+
+case "${1:-}" in
+  ""|start) run_bot ;;
+  setup)    setup ;;
+  config)   show_config ;;
+  update)   update ;;
+  help|-h|--help) usage ;;
+  *) echo "unknown command: $1"; usage; exit 1 ;;
+esac

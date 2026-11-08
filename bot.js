@@ -8,7 +8,7 @@
 const path = require('path');
 require('dotenv').config({ path: path.join(__dirname, '.env') });
 
-const { Client, GatewayIntentBits, Partials } = require('discord.js');
+const { Client, GatewayIntentBits, Partials, EmbedBuilder } = require('discord.js');
 const { execFile } = require('child_process');
 
 const TOKEN = (process.env.DISCORD_TOKEN || '').trim();
@@ -17,12 +17,31 @@ const CHANNEL_IDS = (process.env.CHANNEL_IDS || '')
   .split(',')
   .map((s) => s.trim())
   .filter(Boolean);
+const LOG_CHANNEL_ID = (process.env.LOG_CHANNEL_ID || '').trim();
 const LINK_STYLE = (process.env.LINK_STYLE || 'experiences').trim();
 const DEDUPE_MS = Number(process.env.DEDUPE_MS || 60000);
 
+// The rbxjoiner launcher stops (instead of restarting) on this exit code.
+const EXIT_BAD_CONFIG = 78;
+
 if (!TOKEN) {
-  console.error('[rbx] DISCORD_TOKEN is missing. Run: bash install.sh');
-  process.exit(1);
+  console.error('[rbx] no bot token saved. run: rbxjoiner setup');
+  process.exit(EXIT_BAD_CONFIG);
+}
+
+const COLORS = { ok: 0x2ecc71, fail: 0xe74c3c, info: 0x5865f2 };
+let logChannel = null;
+
+// Posts to the logs channel if one is set; never throws.
+async function logToDiscord(text, color = COLORS.info) {
+  if (!logChannel) return;
+  try {
+    await logChannel.send({
+      embeds: [new EmbedBuilder().setDescription(text).setColor(color).setTimestamp()],
+    });
+  } catch (err) {
+    console.error(`[rbx] couldn't post to logs channel: ${err.message}`);
+  }
 }
 
 // Matches TeleportToPlaceInstance(<placeId>, '<uuid>') with ' or " quotes and loose spacing.
@@ -85,10 +104,30 @@ const client = new Client({
   partials: [Partials.Channel],
 });
 
-client.once('ready', () => {
+client.once('ready', async () => {
   console.log(`[rbx] logged in as ${client.user.tag}`);
   console.log(`[rbx] place ${PLACE_ID} | link style: ${LINK_STYLE}`);
-  console.log(`[rbx] watching: ${CHANNEL_IDS.length ? CHANNEL_IDS.join(', ') : 'every channel the bot can see'}`);
+
+  // Make sure the bot can actually see the channels it was told to scan.
+  for (const id of CHANNEL_IDS) {
+    const ch = await client.channels.fetch(id).catch(() => null);
+    if (ch) console.log(`[rbx] scanning #${ch.name} (${id})`);
+    else console.warn(`[rbx] WARNING: can't see scan channel ${id} — wrong id, or the bot isn't in that server/channel`);
+  }
+  if (!CHANNEL_IDS.length) console.log('[rbx] scanning every channel the bot can see');
+
+  if (LOG_CHANNEL_ID) {
+    const ch = await client.channels.fetch(LOG_CHANNEL_ID).catch(() => null);
+    if (ch && ch.isTextBased()) {
+      logChannel = ch;
+      console.log(`[rbx] logging to #${ch.name}`);
+    } else {
+      console.warn(`[rbx] WARNING: can't use logs channel ${LOG_CHANNEL_ID} — wrong id or no access`);
+    }
+  }
+
+  const watching = CHANNEL_IDS.length ? CHANNEL_IDS.map((id) => `<#${id}>`).join(', ') : 'all channels';
+  await logToDiscord(`🟢 **rbxjoiner online**\nscanning ${watching}\nplace \`${PLACE_ID}\``);
 });
 
 client.on('messageCreate', async (message) => {
@@ -108,12 +147,27 @@ client.on('messageCreate', async (message) => {
 
   const ok = await launchRoblox(jobId);
   message.react(ok ? '✅' : '❌').catch(() => {});
+
+  const src = `from <#${message.channelId}> by ${message.author.tag} · [jump](${message.url})`;
+  await logToDiscord(
+    ok
+      ? `✅ **joining** \`${jobId}\`\n${src}`
+      : `❌ **launch failed** \`${jobId}\`\n${src}\ncheck Termux has "Display over other apps" on`,
+    ok ? COLORS.ok : COLORS.fail
+  );
 });
 
 client.on('error', (err) => console.error('[rbx] client error:', err.message));
 
 client.login(TOKEN).catch((err) => {
   console.error('[rbx] login failed:', err.message);
-  console.error('[rbx] check your token and that Message Content Intent is enabled.');
-  process.exit(1);
+  if (/token/i.test(err.message)) {
+    console.error('[rbx] that bot token is wrong or was reset.');
+    process.exit(EXIT_BAD_CONFIG);
+  }
+  if (/intent/i.test(err.message)) {
+    console.error('[rbx] turn on Message Content Intent in the Discord developer portal (Bot tab).');
+    process.exit(EXIT_BAD_CONFIG);
+  }
+  process.exit(1); // network hiccup etc. — launcher will retry
 });
