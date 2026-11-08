@@ -3,6 +3,7 @@
 #
 #   rbxjoiner          start the bot (runs setup first if nothing is saved yet)
 #   rbxjoiner setup    enter / change bot token, scan channel(s), logs channel, stay time
+#   rbxjoiner key      set up just the Delta key helper (link, @ you, key file)
 #   rbxjoiner config   show what's saved
 #   rbxjoiner update   pull the latest version from GitHub
 
@@ -17,6 +18,18 @@ get_val() { # get_val KEY [default]
   local v=""
   [ -f "$ENV_FILE" ] && v="$(grep -m1 "^$1=" "$ENV_FILE" | cut -d= -f2-)"
   echo "${v:-$2}"
+}
+
+# set_env KEY VALUE — add/replace one line in .env without touching anything else.
+# Empty VALUE removes the key. Leaves your token, channels, etc. exactly as they are.
+set_env() {
+  local k="$1" v="$2" tmp
+  [ -f "$ENV_FILE" ] || { printf 'DISCORD_TOKEN=\n' > "$ENV_FILE"; }
+  tmp="$(mktemp)"
+  grep -v "^$k=" "$ENV_FILE" > "$tmp" 2>/dev/null || true
+  [ -n "$v" ] && printf '%s=%s\n' "$k" "$v" >> "$tmp"
+  mv "$tmp" "$ENV_FILE"
+  chmod 600 "$ENV_FILE"
 }
 
 is_id() { [[ "$1" =~ ^[0-9]{15,22}$ ]]; }
@@ -44,7 +57,7 @@ read_secret() {
   printf '\e[?2004l'   # turn off bracketed paste so pastes don't get wrapped in escape codes
   printf '%s' "$1"
   while IFS= read -rsn1 char; do
-    if [ -z "$char" ]; then                              # Enter
+    if [ -z "$char" ] || [ "$char" = $'\r' ] || [ "$char" = $'\n' ]; then  # Enter (some keyboards send CR)
       break
     elif [ "$char" = $'\x7f' ] || [ "$char" = $'\b' ]; then  # Backspace
       if [ -n "$SECRET" ]; then
@@ -192,6 +205,51 @@ setup() {
   echo
 }
 
+# Just the Delta key helper — plain visible prompts, no token prompt to fight.
+key_setup() {
+  if [ ! -f "$ENV_FILE" ]; then
+    echo "no settings yet — run 'rbxjoiner setup' once to save your bot token first."
+    return 1
+  fi
+
+  local DEFAULT_KEY_FILE="/storage/emulated/0/Delta/Internals/Cache/license"
+  local cur_link cur_mention cur_file link mention file ans
+  cur_link="$(get_val KEY_LINK)"
+  cur_mention="$(get_val KEY_MENTION)"
+  cur_file="$(get_val KEY_FILE)"
+
+  echo
+  echo "===== Delta key helper ====="
+  echo "(press Enter on any line to keep what's in [brackets])"
+  echo
+
+  # the link you open to get a Delta key (your gateway.platoboost.com link)
+  read -rp "paste your Delta key link${cur_link:+ [saved]}: " ans
+  link="${ans:-$cur_link}"
+
+  # discord user id so it can @ you — optional
+  echo "  (user id = Discord Settings > Advanced > Developer Mode on,"
+  echo "   then tap your name > Copy User ID. Enter to skip.)"
+  read -rp "your Discord user id${cur_mention:+ [$cur_mention]}: " ans
+  mention="$(printf '%s' "${ans:-$cur_mention}" | tr -d '[:space:]')"
+
+  # file Delta reads the key from — default is Delta's own license file
+  read -rp "file Delta reads the key from [${cur_file:-$DEFAULT_KEY_FILE}]: " ans
+  file="${ans:-${cur_file:-$DEFAULT_KEY_FILE}}"
+
+  set_env KEY_LINK "$link"
+  set_env KEY_MENTION "$mention"
+  set_env KEY_FILE "$file"
+
+  echo
+  if [ -n "$link" ]; then
+    echo "saved. in Discord: /getkey for your link, then /key <key> to set it."
+  else
+    echo "saved (no link set yet — the key helper stays off until you add one)."
+  fi
+  echo
+}
+
 show_config() {
   if [ ! -f "$ENV_FILE" ]; then
     echo "nothing saved yet, run: rbxjoiner setup"
@@ -249,6 +307,7 @@ usage() {
 case "${1:-}" in
   ""|start) run_bot ;;
   setup)    setup ;;
+  key)      key_setup ;;
   config)   show_config ;;
   update)   update ;;
   help|-h|--help) usage ;;
