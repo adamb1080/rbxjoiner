@@ -2,7 +2,7 @@
 # rbxjoiner — Roblox auto-joiner bot for Termux.
 #
 #   rbxjoiner          start the bot (runs setup first if nothing is saved yet)
-#   rbxjoiner setup    enter / change bot token, scan channel(s), logs channel
+#   rbxjoiner setup    enter / change bot token, scan channel(s), logs channel, stay time
 #   rbxjoiner config   show what's saved
 #   rbxjoiner update   pull the latest version from GitHub
 
@@ -113,20 +113,29 @@ setup() {
     echo "  needs a channel id (numbers only), or leave it blank"
   done
 
-  # keep advanced values if they were already set
-  local place style dedupe
-  place="$(get_val PLACE_ID 142823291)"
-  style="$(get_val LINK_STYLE experiences)"
-  dedupe="$(get_val DEDUPE_MS 60000)"
+  # how long to stay in each server before hopping to the next one in the waitlist
+  local cur_stay stay
+  cur_stay="$(get_val STAY_SECONDS 60)"
+  while true; do
+    read -rp "seconds to stay in each server before the next one [$cur_stay]: " stay
+    stay="$(printf '%s' "${stay:-$cur_stay}" | tr -d '[:space:]')"
+    [[ "$stay" =~ ^[0-9]+$ ]] && break
+    echo "  numbers only"
+  done
 
-  cat > "$ENV_FILE" <<EOF
-DISCORD_TOKEN=$token
-CHANNEL_IDS=$scan
-LOG_CHANNEL_ID=$logs
-PLACE_ID=$place
-LINK_STYLE=$style
-DEDUPE_MS=$dedupe
-EOF
+  # keep advanced values if they were already set (otherwise use defaults)
+  local extras="" kv key
+  for kv in PLACE_ID=142823291 LINK_STYLE=experiences DEDUPE_MS=60000 \
+            COLLECT_SECONDS=3 EXPIRE_SECONDS=300 MIN_VALUE=0; do
+    key="${kv%%=*}"
+    extras+="$key=$(get_val "$key" "${kv#*=}")"$'\n'
+  done
+
+  {
+    printf 'DISCORD_TOKEN=%s\nCHANNEL_IDS=%s\nLOG_CHANNEL_ID=%s\nSTAY_SECONDS=%s\n' \
+      "$token" "$scan" "$logs" "$stay"
+    printf '%s' "$extras"
+  } > "$ENV_FILE"
   chmod 600 "$ENV_FILE"
 
   echo
@@ -142,6 +151,8 @@ show_config() {
   echo "bot token : $(mask "$(get_val DISCORD_TOKEN)")"
   echo "scan id(s): $(get_val CHANNEL_IDS '(not set)')"
   echo "logs id   : $(get_val LOG_CHANNEL_ID '(off)')"
+  echo "stay time : $(get_val STAY_SECONDS 60)s per server"
+  echo "min value : $(get_val MIN_VALUE 0)"
   echo "place id  : $(get_val PLACE_ID 142823291)"
   echo "link style: $(get_val LINK_STYLE experiences)"
 }
