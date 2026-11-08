@@ -76,13 +76,19 @@ if (!/^[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]{20,}$/.test(TOKEN)) 
 const COLORS = { ok: 0x2ecc71, fail: 0xe74c3c, info: 0x5865f2 };
 let logChannel = null;
 
-// Posts to the logs channel if one is set; never throws.
-async function logToDiscord(text, color = COLORS.info) {
+// Posts to the logs channel if one is set; never throws. Pass { content } to put a
+// real mention above the embed — mentions inside an embed don't ping, this does.
+async function logToDiscord(text, color = COLORS.info, opts = {}) {
   if (!logChannel) return;
   try {
-    await logChannel.send({
+    const payload = {
       embeds: [new EmbedBuilder().setDescription(text).setColor(color).setTimestamp()],
-    });
+    };
+    if (opts.content) {
+      payload.content = opts.content;
+      payload.allowedMentions = { parse: ['users', 'roles', 'everyone'] };
+    }
+    await logChannel.send(payload);
   } catch (err) {
     console.error(`[rbx] couldn't post to logs channel: ${err.message}`);
   }
@@ -423,7 +429,7 @@ const COMMANDS = [
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
 ]
   .map((c) => c.toJSON())
-  .concat(keys.configured ? KeyManager.commands() : []);
+  .concat(keys.configured ? keys.commands() : []);
 
 // Guild commands show up instantly (global ones can take an hour).
 async function registerCommands(guild) {

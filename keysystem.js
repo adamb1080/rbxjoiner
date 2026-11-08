@@ -1,22 +1,28 @@
-// keysystem.js — auto Delta key refresh for rbxjoiner.
+// keysystem.js — Delta key handling for rbxjoiner.
 //
 // Delta's key system runs on Platoboost. A key is tied to your HWID/identifier and
 // expires (usually every 24h). This module keeps a fresh key around so you're not
-// re-keying by hand: on a timer it pulls the current key, caches it to disk, writes
-// it to a file Delta reads, posts it to your logs channel, and warns you *before*
-// it dies so re-keying is one tap.
+// re-keying blind: it caches the key to disk, writes it to a file Delta reads, and
+// warns you *before* it dies so re-keying is one tap.
 //
-// What it CAN'T do: complete the ad-link checkpoint for you — that's the part the
-// provider sells, and no headless script does it reliably. Two ways to feed it a key:
+// The one thing no headless script can do is complete the ad-link checkpoint — that's
+// the part the provider sells. So there are three ways to feed it a key:
 //
-//   1. KEY_URL — a link that returns a key (a getkey endpoint, or your own bypass).
+//   1. MANUAL (the hands-on path) — set KEY_LINK to your checkpoint / getkey link.
+//      The bot posts that link when the key is missing or about to die; you complete
+//      it by hand, then paste the key back with `/key <key>`. It writes the key to the
+//      Delta key file and starts the countdown. When it runs out, the link comes back
+//      on its own so you never get locked out mid-session.
+//
+//   2. KEY_URL — a link that returns a key (a getkey endpoint, or your own bypass).
 //      Set this and the whole thing runs fully hands-free. Raw body or JSON both work.
 //
-//   2. Platoboost built-in — set PLATOBOOST_SERVICE + PLATOBOOST_IDENTIFIER and it
+//   3. Platoboost built-in — set PLATOBOOST_SERVICE + PLATOBOOST_IDENTIFIER and it
 //      asks Platoboost whether your identifier already has an active key and grabs it.
 //      When there's no active key it surfaces the checkpoint link instead of pretending.
-//      Platoboost moves their API around; if the built-in call stops matching your
-//      provider, point KEY_URL at the real endpoint and you're back in business.
+//
+// You can set KEY_LINK alongside an automatic source: if the auto pull fails, the
+// manual link is what gets posted so you can still re-key by hand.
 
 const fs = require('fs');
 const path = require('path');
@@ -51,6 +57,8 @@ class KeyManager {
     this.colors = colors;
 
     // --- config ---
+    this.keyLink = env('KEY_LINK') || env('CHECKPOINT_URL'); // static checkpoint fallback
+    this.mentionRaw = env('KEY_MENTION') || env('MENTION_ID') || env('OWNER_ID'); // who to @ when a link drops
     this.keyUrl = env('KEY_URL'); // generic resolver: any endpoint that returns a key
     this.keyRegex = env('KEY_REGEX'); // optional custom scraper for raw responses
     this.keyJsonPath = env('KEY_JSON_PATH'); // where the key lives in a JSON response, e.g. "data.key"
@@ -68,9 +76,42 @@ class KeyManager {
     this.statePath = path.join(__dirname, '.keystate.json');
     this.state = this._loadState(); // { key, fetchedAt, expiresAt, source, checkpoint }
     this.timer = null;
-    this.lastWarnedFor = null; // expiresAt we've already warned about, so we don't spam
 
-    this.enabled = Boolean(this.keyUrl || (this.pbService && this.pbIdentifier));
+    // An automatic source can pull a live checkpoint (and sometimes the key itself).
+    // Platoboost rotates the link each cycle, so it's how you get a *fresh* link to @.
+    this.autoSource = Boolean(this.keyUrl || (this.pbService && this.pbIdentifier));
+    // Can we hand you a checkpoint link to complete? (static one, or a live Platoboost one)
+    this.canLink = Boolean(this.keyLink || (this.pbService && this.pbIdentifier));
+    this.enabled = this.autoSource || Boolean(this.keyLink);
+  }
+
+  // The freshest link to complete right now: a live (rotating) Platoboost checkpoint if
+  // configured, else the static KEY_LINK. If Platoboost already has an active key it
+  // hands that back instead. Returns { key?, expiresAt?, link? }.
+  async currentLink() {
+    if (this.pbService && this.pbIdentifier) {
+      try {
+        const out = await this._resolvePlatoboost();
+        if (out.key) return { key: out.key, expiresAt: out.expiresAt };
+        if (out.checkpoint) return { link: out.checkpoint };
+      } catch (err) {
+        console.error(`[key] couldn't pull a live link: ${err.message}`);
+      }
+    }
+    return { link: this.keyLink || null };
+  }
+
+  // Build a pingable mention from KEY_MENTION. Accepts a bare user id ("123"), a role
+  // ("&123"), an already-formatted mention ("<@123>"), or "everyone"/"here".
+  _mention() {
+    const m = (this.mentionRaw || '').trim();
+    if (!m) return '';
+    if (/^@?everyone$/i.test(m)) return '@everyone';
+    if (/^@?here$/i.test(m)) return '@here';
+    if (/^<@[!&]?\d+>$/.test(m)) return m;
+    if (/^&\d+$/.test(m)) return `<@&${m.slice(1)}>`;
+    if (/^\d+$/.test(m)) return `<@${m}>`;
+    return m;
   }
 
   // Is the key system configured at all?
@@ -103,6 +144,40 @@ class KeyManager {
     } catch (err) {
       console.error(`[key] couldn't write key file ${this.keyFile}: ${err.message}`);
     }
+  }
+
+  // ---- applying a key (shared by auto-refresh and manual paste) ----
+
+  // Store a key, write the Delta key file, start the countdown. Returns whether it
+  // changed. checkpoint is cleared so the *next* link that appears counts as new.
+  _applyKey(key, expiresAt, source) {
+    const now = Date.now();
+    const changed = key !== this.state.key;
+    this.state = {
+      key,
+      fetchedAt: now,
+      expiresAt: expiresAt || now + this.ttlMs,
+      source,
+      checkpoint: null,
+    };
+    this._saveState();
+    this._writeKeyFile(key);
+    return changed;
+  }
+
+  // ---- manual entry: you paste the key you got from the checkpoint ----
+
+  // Takes the raw string from `/key <value>`. Applies instantly in the running
+  // process — no restart — so Delta reads the new key the next time it launches.
+  setManualKey(raw) {
+    const key = String(raw || '').trim();
+    if (!key) return { ok: false, reason: 'no key given' };
+    if (/\s/.test(key)) return { ok: false, reason: "that's got spaces in it — paste just the key" };
+    if (key.length < 6) return { ok: false, reason: 'that looks too short to be a key' };
+
+    const changed = this._applyKey(key, null, 'manual');
+    console.log(`[key] manual key set, expires ${new Date(this.state.expiresAt).toISOString()}`);
+    return { ok: true, key, expiresAt: this.state.expiresAt, changed };
   }
 
   // ---- resolvers: return { key, expiresAt? } on success, or { checkpoint?, reason } ----
@@ -161,17 +236,21 @@ class KeyManager {
     if (key) return { key: String(key).trim(), expiresAt: exp ? Number(exp) * 1000 : null };
 
     // No active key — hand back the checkpoint so re-keying is one tap.
-    const checkpoint = data.url ?? data.checkpoint ?? data.link ?? null;
+    const checkpoint = data.url ?? data.checkpoint ?? data.link ?? this.keyLink ?? null;
     return { reason: 'no active key on Platoboost — checkpoint not completed', checkpoint };
   }
 
   async _resolve() {
     if (this.keyUrl) return this._resolveUrl();
     if (this.pbService && this.pbIdentifier) return this._resolvePlatoboost();
-    return { reason: 'key system not configured' };
+    return { reason: 'no automatic key source — set a key by hand with /key <key>', checkpoint: this.keyLink };
   }
 
-  // Fetch once. onDemand=true means a person asked (so we always report back).
+  // Check for a key / fresh checkpoint once. onDemand=true means a person asked, so
+  // we always report back even when nothing changed. Handles every mode:
+  //   - got a key (KEY_URL, or Platoboost with an already-active key) -> apply it.
+  //   - no key, got a (rotating) checkpoint -> @ you with the link, but only when the
+  //     link is new, so you're pinged once per fresh link instead of every interval.
   async refresh(onDemand = false) {
     if (!this.enabled) return { ok: false, reason: 'key system not configured' };
 
@@ -180,41 +259,35 @@ class KeyManager {
       out = await this._resolve();
     } catch (err) {
       console.error(`[key] refresh failed: ${err.message}`);
-      if (onDemand) await this.post(`⚠️ **key refresh failed** — ${err.message}`, this.colors.fail);
-      return { ok: false, reason: err.message };
+      // Network hiccup: fall back to the static link so you can still re-key by hand.
+      out = { reason: err.message, checkpoint: this.keyLink || this.state.checkpoint };
     }
 
     if (!out.key) {
-      // Couldn't get a key. Surface the checkpoint if we have one.
-      this.state.checkpoint = out.checkpoint || this.state.checkpoint;
-      this._saveState();
-      if (out.checkpoint) {
+      const link = out.checkpoint || this.keyLink || this.state.checkpoint || null;
+      const newLink = Boolean(link) && link !== this.state.checkpoint;
+
+      if (link && (newLink || onDemand)) {
+        this.state.checkpoint = link;
+        this._saveState();
+        const mention = this._mention();
         await this.post(
-          `🔑 **Delta key needs a refresh** — complete the checkpoint:\n${out.checkpoint}`,
-          this.colors.fail
+          `🔑 **new Delta key link${this.state.key ? ' — current one is expiring' : ''}**\n` +
+            `complete the checkpoint, then paste the key back with \`/key <key>\`:\n${link}`,
+          this.colors.fail,
+          mention ? { content: mention } : {}
         );
       } else if (onDemand) {
-        await this.post(`⚠️ couldn't pull a key: ${out.reason}`, this.colors.fail);
+        await this.post(`⚠️ couldn't pull a key or link: ${out.reason}`, this.colors.fail);
       }
-      return { ok: false, reason: out.reason, checkpoint: out.checkpoint };
+      return { ok: false, reason: out.reason, checkpoint: link };
     }
 
-    const changed = out.key !== this.state.key;
-    const now = Date.now();
-    this.state = {
-      key: out.key,
-      fetchedAt: now,
-      expiresAt: out.expiresAt || now + this.ttlMs,
-      source: this.keyUrl ? 'url' : 'platoboost',
-      checkpoint: null,
-    };
-    this.lastWarnedFor = null;
-    this._saveState();
-
+    // Got an actual key (ad-link already satisfied) — apply it hands-free.
+    const changed = this._applyKey(out.key, out.expiresAt, this.keyUrl ? 'url' : 'platoboost');
     if (changed || onDemand) {
-      this._writeKeyFile(out.key);
       await this.post(
-        `🔑 **Delta key ${changed ? 'refreshed' : 'confirmed'}**\n\`\`\`${out.key}\`\`\`` +
+        `🔑 **Delta key ${changed ? 'refreshed automatically' : 'confirmed'}**\n\`\`\`${out.key}\`\`\`` +
           `expires <t:${Math.floor(this.state.expiresAt / 1000)}:R>` +
           (this.keyFile ? `\nwritten to \`${this.keyFile}\`` : ''),
         this.colors.ok
@@ -224,32 +297,22 @@ class KeyManager {
     return { ok: true, key: out.key, expiresAt: this.state.expiresAt, changed };
   }
 
-  // Called on the interval: refresh if the key is missing or inside the warn window.
+  // Called on the interval: check if the key is missing or inside the warn window.
+  // refresh() handles applying a key or pinging a fresh link, de-duped either way.
   async _tick() {
-    const now = Date.now();
-    const remaining = (this.state.expiresAt || 0) - now;
-
-    if (!this.state.key || remaining <= this.warnMs) {
-      const res = await this.refresh(false);
-      // Still no fresh key and the current one is dying — nudge once.
-      if (!res.ok && this.state.expiresAt && this.state.expiresAt !== this.lastWarnedFor && remaining > 0) {
-        this.lastWarnedFor = this.state.expiresAt;
-        await this.post(
-          `⏳ **Delta key expires <t:${Math.floor(this.state.expiresAt / 1000)}:R>** and I couldn't auto-refresh it.` +
-            (this.state.checkpoint ? `\ncomplete the checkpoint:\n${this.state.checkpoint}` : '\nrun `/refreshkey`.'),
-          this.colors.fail
-        );
-      }
-    }
+    const remaining = (this.state.expiresAt || 0) - Date.now();
+    if (this.state.key && remaining > this.warnMs) return; // still good, nothing to do
+    await this.refresh(false);
   }
 
   start() {
     if (!this.enabled) {
-      console.log('[key] key system off — set KEY_URL or PLATOBOOST_SERVICE/PLATOBOOST_IDENTIFIER to turn it on');
+      console.log('[key] key system off — set KEY_LINK (manual), KEY_URL, or PLATOBOOST_SERVICE/IDENTIFIER to turn it on');
       return;
     }
     console.log(
-      `[key] on — source: ${this.keyUrl ? 'KEY_URL' : 'Platoboost'}, checking every ${this.refreshMs / 1000}s`
+      `[key] on — ${this.autoSource ? `auto source: ${this.keyUrl ? 'KEY_URL' : 'Platoboost'}` : 'manual (/key)'}, ` +
+        `checking every ${this.refreshMs / 1000}s`
     );
     // First check shortly after login so it doesn't race the ready handler.
     setTimeout(() => this._tick(), 5000);
@@ -264,38 +327,93 @@ class KeyManager {
   // Short status line for the ready banner.
   statusLine() {
     if (!this.enabled) return null;
-    if (!this.state.key) return '🔑 key system on, no key yet';
-    return `🔑 key cached, expires <t:${Math.floor(this.state.expiresAt / 1000)}:R>`;
+    const mode = this.autoSource ? '' : ' (manual)';
+    if (!this.state.key) return `🔑 key system on${mode}, no key yet${this.canLink ? ' — /getkey' : ''}`;
+    return `🔑 key cached${mode}, expires <t:${Math.floor(this.state.expiresAt / 1000)}:R>`;
   }
 
   // ---- slash commands ----
 
-  static commands() {
-    return [
+  // Instance method (not static): which commands exist depends on how it's configured.
+  commands() {
+    const cmds = [
       new SlashCommandBuilder()
         .setName('key')
-        .setDescription('Show the current Delta key and when it expires')
+        .setDescription('Paste a Delta key in with /key <key>, or run it bare to see the current one')
+        .addStringOption((o) =>
+          o
+            .setName('value')
+            .setDescription('the key you got from the checkpoint — leave blank to just view the current one')
+            .setRequired(false)
+        )
         .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
-      new SlashCommandBuilder()
-        .setName('refreshkey')
-        .setDescription('Pull a fresh Delta key right now')
-        .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
-    ].map((c) => c.toJSON());
+    ];
+
+    if (this.canLink) {
+      cmds.push(
+        new SlashCommandBuilder()
+          .setName('getkey')
+          .setDescription('Pull the current Delta checkpoint link so you can grab a fresh key')
+          .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
+      );
+    }
+
+    if (this.autoSource) {
+      cmds.push(
+        new SlashCommandBuilder()
+          .setName('refreshkey')
+          .setDescription('Pull a fresh Delta key from the automatic source right now')
+          .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
+      );
+    }
+
+    return cmds.map((c) => c.toJSON());
   }
 
   // Returns true if it handled the interaction.
   async handleInteraction(interaction) {
     const name = interaction.commandName;
-    if (name !== 'key' && name !== 'refreshkey') return false;
+    if (name !== 'key' && name !== 'refreshkey' && name !== 'getkey') return false;
 
     if (!this.enabled) {
       await interaction.reply({
-        content: 'key system is off — set `KEY_URL` or `PLATOBOOST_SERVICE`/`PLATOBOOST_IDENTIFIER` in `.env`.',
+        content:
+          'key system is off — set `KEY_LINK` (manual), `KEY_URL`, or `PLATOBOOST_SERVICE`/`PLATOBOOST_IDENTIFIER` in `.env`.',
         flags: MessageFlags.Ephemeral,
       });
       return true;
     }
 
+    // /getkey — pull the current checkpoint link so you can go complete it. If
+    // Platoboost already has an active key, grab that instead of a link.
+    if (name === 'getkey') {
+      if (!this.canLink) {
+        await interaction.reply({
+          content: 'no checkpoint source — add `KEY_LINK`, or `PLATOBOOST_SERVICE`/`PLATOBOOST_IDENTIFIER`, to `.env`.',
+          flags: MessageFlags.Ephemeral,
+        });
+        return true;
+      }
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+      const cur = await this.currentLink();
+      if (cur.key) {
+        const changed = this._applyKey(cur.key, cur.expiresAt, 'platoboost');
+        await interaction.editReply(
+          `✅ you've already got an active key — ${changed ? 'pulled it' : 'confirmed it'}` +
+            (this.keyFile ? ` and wrote it to \`${this.keyFile}\`` : '') +
+            `, expires <t:${Math.floor(this.state.expiresAt / 1000)}:R>`
+        );
+        return true;
+      }
+      if (!cur.link) {
+        await interaction.editReply("couldn't get a link right now — Platoboost may be down. try again in a bit.");
+        return true;
+      }
+      await interaction.editReply(`🔑 complete this, then paste the key with \`/key <key>\`:\n${cur.link}`);
+      return true;
+    }
+
+    // /refreshkey — pull from the automatic source.
     if (name === 'refreshkey') {
       await interaction.deferReply({ flags: MessageFlags.Ephemeral });
       const res = await this.refresh(true);
@@ -307,9 +425,39 @@ class KeyManager {
       return true;
     }
 
+    // /key <value> — paste a key in by hand.
+    const value = interaction.options.getString('value');
+    if (value) {
+      const res = this.setManualKey(value);
+      if (!res.ok) {
+        await interaction.reply({ content: `⚠️ ${res.reason}`, flags: MessageFlags.Ephemeral });
+        return true;
+      }
+      await interaction.reply({
+        content:
+          `✅ key saved${res.changed ? '' : ' (same as before)'} — expires <t:${Math.floor(res.expiresAt / 1000)}:R>` +
+          (this.keyFile ? `\nwritten to \`${this.keyFile}\` for Delta.` : '\n(no `KEY_FILE` set, so it\'s only cached.)'),
+        flags: MessageFlags.Ephemeral,
+      });
+      // Also drop a note in the logs channel so there's a record of the swap.
+      await this.post(
+        `🔑 **Delta key set by hand** — expires <t:${Math.floor(res.expiresAt / 1000)}:R>` +
+          (this.keyFile ? `\nwritten to \`${this.keyFile}\`` : ''),
+        this.colors.ok
+      );
+      return true;
+    }
+
     // /key — show what's cached (ephemeral; keys are yours alone).
     if (!this.state.key) {
-      await interaction.reply({ content: 'no key cached yet. try `/refreshkey`.', flags: MessageFlags.Ephemeral });
+      await interaction.reply({
+        content: this.canLink
+          ? 'no key yet. run `/getkey`, complete the link, then `/key <key>`.'
+          : this.autoSource
+            ? 'no key cached yet. try `/refreshkey`.'
+            : 'no key yet. paste one with `/key <key>`.',
+        flags: MessageFlags.Ephemeral,
+      });
       return true;
     }
     const expired = Date.now() >= this.state.expiresAt;
