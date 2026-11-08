@@ -11,7 +11,11 @@ require('dotenv').config({ path: path.join(__dirname, '.env') });
 const { Client, GatewayIntentBits, Partials, EmbedBuilder } = require('discord.js');
 const { execFile } = require('child_process');
 
-const TOKEN = (process.env.DISCORD_TOKEN || '').trim();
+// Clean up paste junk the same way `rbxjoiner setup` does.
+const TOKEN = (process.env.DISCORD_TOKEN || '')
+  .replace(/\x1b\[20[01]~/g, '')
+  .replace(/^Bot\s+/, '')
+  .replace(/[^A-Za-z0-9._-]/g, '');
 const PLACE_ID = (process.env.PLACE_ID || '142823291').trim();
 const CHANNEL_IDS = (process.env.CHANNEL_IDS || '')
   .split(',')
@@ -26,6 +30,10 @@ const EXIT_BAD_CONFIG = 78;
 
 if (!TOKEN) {
   console.error('[rbx] no bot token saved. run: rbxjoiner setup');
+  process.exit(EXIT_BAD_CONFIG);
+}
+if (!/^[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]{20,}$/.test(TOKEN)) {
+  console.error("[rbx] the saved bot token isn't a valid token (wrong thing pasted?). run: rbxjoiner setup");
   process.exit(EXIT_BAD_CONFIG);
 }
 
@@ -161,7 +169,7 @@ client.on('error', (err) => console.error('[rbx] client error:', err.message));
 
 client.login(TOKEN).catch((err) => {
   console.error('[rbx] login failed:', err.message);
-  if (/token/i.test(err.message)) {
+  if (/token|authorization|unauthorized/i.test(err.message)) {
     console.error('[rbx] that bot token is wrong or was reset.');
     process.exit(EXIT_BAD_CONFIG);
   }

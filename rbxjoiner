@@ -21,6 +21,19 @@ get_val() { # get_val KEY [default]
 
 is_id() { [[ "$1" =~ ^[0-9]{15,22}$ ]]; }
 
+# Strips paste junk (escape codes, invisible chars, "Bot " prefix) and keeps
+# only characters a Discord token can contain.
+clean_token() {
+  local t="$1"
+  t="${t//$'\e[200~'/}"
+  t="${t//$'\e[201~'/}"
+  t="${t#Bot }"
+  printf '%s' "$t" | LC_ALL=C tr -cd 'A-Za-z0-9._-'
+}
+
+# Real bot tokens are three base64url chunks joined by dots: xxxx.yyyy.zzzz
+is_token() { [[ "$1" =~ ^[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]{20,}$ ]]; }
+
 mask() { [ -n "$1" ] && echo "...${1: -4}" || echo "(not set)"; }
 
 # Reads a secret one key at a time and prints * for each character, so you can
@@ -28,6 +41,7 @@ mask() { [ -n "$1" ] && echo "...${1: -4}" || echo "(not set)"; }
 read_secret() {
   local char
   SECRET=""
+  printf '\e[?2004l'   # turn off bracketed paste so pastes don't get wrapped in escape codes
   printf '%s' "$1"
   while IFS= read -rsn1 char; do
     if [ -z "$char" ]; then                              # Enter
@@ -65,12 +79,18 @@ setup() {
       read_secret "enter bot token id: "
       token="$SECRET"
     fi
-    token="$(printf '%s' "$token" | tr -d '[:space:]')"
-    if [ ${#token} -ge 50 ]; then
-      echo "  got it ($(mask "$token"))"
+    token="$(clean_token "$token")"
+    if is_token "$token"; then
+      echo "  got it ($(mask "$token"), ${#token} chars)"
       break
     fi
-    echo "  that doesn't look like a bot token, try again"
+    if [ -n "$cur_token" ] && [ "$token" = "$(clean_token "$cur_token")" ]; then
+      echo "  the saved token is broken, paste it again"
+      cur_token=""
+    fi
+    echo "  that's not a bot token. it has two dots in it, like MTI3NDk...abc.GxYz12.AbC..."
+    echo "  get it from: Developer Portal > your app > Bot > Reset Token"
+    echo "  (NOT the Application ID or Public Key)"
   done
 
   # channel(s) to scan
