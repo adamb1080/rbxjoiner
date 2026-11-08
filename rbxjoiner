@@ -23,6 +23,28 @@ is_id() { [[ "$1" =~ ^[0-9]{15,22}$ ]]; }
 
 mask() { [ -n "$1" ] && echo "...${1: -4}" || echo "(not set)"; }
 
+# Reads a secret one key at a time and prints * for each character, so you can
+# see that typing/pasting is actually working. Result goes in $SECRET.
+read_secret() {
+  local char
+  SECRET=""
+  printf '%s' "$1"
+  while IFS= read -rsn1 char; do
+    if [ -z "$char" ]; then                              # Enter
+      break
+    elif [ "$char" = $'\x7f' ] || [ "$char" = $'\b' ]; then  # Backspace
+      if [ -n "$SECRET" ]; then
+        SECRET="${SECRET%?}"
+        printf '\b \b'
+      fi
+    else
+      SECRET+="$char"
+      printf '*'
+    fi
+  done
+  echo
+}
+
 setup() {
   local cur_token cur_scan cur_logs token scan logs ok id ids
   cur_token="$(get_val DISCORD_TOKEN)"
@@ -34,13 +56,14 @@ setup() {
   [ -n "$cur_token" ] && echo "(press Enter to keep what's in [brackets])"
   echo
 
-  # bot token (hidden while typing/pasting)
+  # bot token (shows * while typing/pasting)
   while true; do
     if [ -n "$cur_token" ]; then
-      read -rsp "enter bot token id [$(mask "$cur_token")]: " token; echo
-      token="${token:-$cur_token}"
+      read_secret "enter bot token id [$(mask "$cur_token")]: "
+      token="${SECRET:-$cur_token}"
     else
-      read -rsp "enter bot token id: " token; echo
+      read_secret "enter bot token id: "
+      token="$SECRET"
     fi
     token="$(printf '%s' "$token" | tr -d '[:space:]')"
     if [ ${#token} -ge 50 ]; then
