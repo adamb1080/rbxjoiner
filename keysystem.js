@@ -146,6 +146,30 @@ class KeyManager {
     }
   }
 
+  // Is Delta's key file on disk and holding the current key? (No KEY_FILE set =
+  // nothing to write, so treat as fine.)
+  _keyFilePresent() {
+    if (!this.keyFile) return true;
+    try {
+      if (!fs.existsSync(this.keyFile)) return false;
+      return fs.readFileSync(this.keyFile, 'utf8').trim() === String(this.state.key || '').trim();
+    } catch {
+      return false;
+    }
+  }
+
+  // Self-heal. Delta wipes its key file when it prompts for a new key, but a
+  // cached key can still be valid — so if the file went missing (or holds the
+  // wrong key) while the key is good, write it back from cache. Returns true if
+  // it had to rewrite, so the caller can post a note.
+  _ensureKeyFile() {
+    if (!this.keyFile || !this.state.key) return false;
+    if (this._keyFilePresent()) return false;
+    this._writeKeyFile(this.state.key);
+    console.log('[key] license file was missing — restored it from the cached key');
+    return true;
+  }
+
   // ---- applying a key (shared by auto-refresh and manual paste) ----
 
   // Store a key, write the Delta key file, start the countdown. Returns whether it
@@ -301,7 +325,18 @@ class KeyManager {
   // refresh() handles applying a key or pinging a fresh link, de-duped either way.
   async _tick() {
     const remaining = (this.state.expiresAt || 0) - Date.now();
-    if (this.state.key && remaining > this.warnMs) return; // still good, nothing to do
+    if (this.state.key && remaining > this.warnMs) {
+      // Key's still good — but make sure Delta's file didn't vanish under us.
+      if (this._ensureKeyFile()) {
+        await this.post(
+          `♻️ **Delta key file was missing — restored it**\n` +
+            `key is still valid, expires <t:${Math.floor(this.state.expiresAt / 1000)}:R>\n` +
+            `rewrote \`${this.keyFile}\``,
+          this.colors.ok
+        );
+      }
+      return;
+    }
     await this.refresh(false);
   }
 
@@ -314,6 +349,14 @@ class KeyManager {
       `[key] on — ${this.autoSource ? `auto source: ${this.keyUrl ? 'KEY_URL' : 'Platoboost'}` : 'manual (/key)'}, ` +
         `checking every ${this.refreshMs / 1000}s`
     );
+    // If Delta wiped its key file while we were off, put it back right away.
+    if (this._ensureKeyFile()) {
+      this.post(
+        `♻️ **Delta key file was missing — restored it on startup**\n` +
+          `expires <t:${Math.floor(this.state.expiresAt / 1000)}:R> · \`${this.keyFile}\``,
+        this.colors.ok
+      ).catch(() => {});
+    }
     // First check shortly after login so it doesn't race the ready handler.
     setTimeout(() => this._tick(), 5000);
     this.timer = setInterval(() => this._tick(), this.refreshMs);
@@ -461,13 +504,22 @@ class KeyManager {
       return true;
     }
     const expired = Date.now() >= this.state.expiresAt;
+    const restored = !expired && this._ensureKeyFile(); // viewing it heals a wiped file too
+    const fileField = !this.keyFile
+      ? 'not set'
+      : this._keyFilePresent()
+        ? restored
+          ? '🟢 restored'
+          : '🟢 written'
+        : '🔴 missing';
     const embed = new EmbedBuilder()
       .setTitle('Delta key')
       .setDescription(`\`\`\`${this.state.key}\`\`\``)
       .addFields(
         { name: 'status', value: expired ? '🔴 expired' : '🟢 active', inline: true },
         { name: 'expires', value: `<t:${Math.floor(this.state.expiresAt / 1000)}:R>`, inline: true },
-        { name: 'source', value: this.state.source || '—', inline: true }
+        { name: 'source', value: this.state.source || '—', inline: true },
+        { name: 'key file', value: fileField, inline: true }
       )
       .setColor(expired ? this.colors.fail : this.colors.ok)
       .setTimestamp(this.state.fetchedAt || undefined);

@@ -149,6 +149,8 @@ The key system stays **off** until `KEY_LINK`, `KEY_URL`, or Platoboost is set. 
 
 The cached key and its expiry live in `.keystate.json` (git-ignored) so it survives restarts. Platoboost shuffles their API around sometimes — if the built-in call stops matching your provider, point `KEY_URL` at the real endpoint and you're back in business.
 
+**Self-healing key file:** Delta deletes its key file whenever it prompts you for a new key — even if your cached key is still valid. The bot watches for that: if the file Delta reads (`KEY_FILE`) goes missing while the cached key is still good, it writes it straight back from the cache (on startup, on every check, and whenever you run `/key`) and posts a ♻️ note — no re-keying needed. `/key` shows a **key file** field so you can see at a glance whether Delta's file is written or missing. This only works if `KEY_FILE` points at the file Delta reads; with it blank the key is cached but never written, so you'd be making that file by hand.
+
 ## Advanced config
 
 Everything is saved in `.env` in the repo folder. Git ignores this file, so your token never gets pushed. Setup writes it for you. To change these extras, edit the file by hand:
